@@ -1,0 +1,44 @@
+name: build kernel
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'kernel/**'
+      - 'build_kernel.sh'
+      - 'Dockerfile.builder'
+      - '.github/workflows/build-kernel.yml'
+  pull_request:
+    paths:
+      - 'kernel/**'
+      - 'build_kernel.sh'
+      - 'Dockerfile.builder'
+      - '.github/workflows/build-kernel.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: get kernel submodule ref
+        id: kernel-submodule
+        run: echo "ref=$(git ls-tree HEAD | awk '$4 == "kernel"' | awk '{print $3}')" | tee -a $GITHUB_OUTPUT
+
+      - name: restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-kernel-${{ steps.kernel-submodule.outputs.ref }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-kernel-${{ steps.kernel-submodule.outputs.ref }}-
+            ccache-kernel-
+
+      - name: build kernel
+        run: ./build_kernel.sh
+
+      - name: upload boot.img
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot.img
+          path: output/boot.img
