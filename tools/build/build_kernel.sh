@@ -88,6 +88,9 @@ build_kernel() {
   export KBUILD_BUILD_USER="vamos"
   export KBUILD_BUILD_HOST="vamos"
   export KCFLAGS="-w"
+  
+  GIT_REV="$(git -C $DIR rev-parse --short HEAD)"
+  export LOCALVERSION="-vamos-$GIT_REV"
 
   # Build kernel
   cd "$KERNEL_DIR"
@@ -198,6 +201,10 @@ DTS_FILES=(
   '${DTS_FILES[0]}'
   '${DTS_FILES[1]}'
 )
+
+# building both kernel and system at same time cause git dubious ownership errors
+git config --global --add safe.directory '$DIR'
+git config --global --add safe.directory '$KERNEL_DIR'
 
 $(declare -f build_kernel)
 $(declare -f install_dts)
