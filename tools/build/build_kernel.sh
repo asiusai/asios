@@ -61,7 +61,11 @@ docker build -f tools/build/Dockerfile.builder -t vamos-builder "$DIR" \
   --build-arg GID="$(id -g)"
 
 echo "Starting vamos-builder container"
-CONTAINER_ID=$(docker run -d -u "$(id -u):$(id -g)" -v "$DIR":"$DIR" -w "$DIR" vamos-builder)
+# If vamOS is itself a git submodule, mount the outer superproject so that
+# nested .git gitfiles (kernel/linux/.git → ../../../.git/modules/...) resolve.
+MOUNT_ROOT="$(git -C "$DIR" rev-parse --show-superproject-working-tree 2>/dev/null || true)"
+[ -z "$MOUNT_ROOT" ] && MOUNT_ROOT="$DIR"
+CONTAINER_ID=$(docker run -d -u "$(id -u):$(id -g)" -v "$MOUNT_ROOT":"$MOUNT_ROOT":z -w "$DIR" vamos-builder)
 
 trap cleanup EXIT
 
