@@ -5,15 +5,18 @@ USERNAME=comma
 PASSWD=comma
 
 # Create identification files
-touch /TICI
-# TODO: rename once openpilot supports
-touch /AGNOS
+touch /ASIUS
 
 mkdir -p /etc/xbps.d
 cp /usr/share/xbps.d/*-repository-*.conf /etc/xbps.d/
 sed -i 's|https://repo-default.voidlinux.org|https://mirrors.cicku.me/voidlinux|g' /etc/xbps.d/*-repository-*.conf
 
-# Update xbps first, then package database
+# Hold base-files: buildkit's qemu-user sandbox cannot replace /etc/mtab during
+# a base-files upgrade (`Operation not permitted` on the symlink overwrite).
+# The tarball's base-files is good enough for our purposes; skip the upgrade.
+xbps-pkgdb -m hold base-files
+
+# Update xbps first, then full system upgrade (base-files held)
 xbps-install -Syu xbps -y
 xbps-install -Syu
 
@@ -72,11 +75,13 @@ xbps-install -y \
   logrotate \
   lz4 \
   mesa-dri \
+  mesa-opencl \
   nano \
   ncurses-devel \
   net-tools \
   NetworkManager \
   nload \
+  ocl-icd \
   opencl-headers \
   portaudio-devel \
   ppp \

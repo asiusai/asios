@@ -62,8 +62,23 @@ RUN cd /tmp/vamos/uv && \
 # Install firmware from upstream linux-firmware (ath10k WiFi + modem + Bluetooth)
 COPY ./kernel/firmware/ath10k/WCN3990/hw1.0 /lib/firmware/ath10k/WCN3990/hw1.0
 COPY ./kernel/firmware/qcom/sdm845 /lib/firmware/qcom/sdm845
+COPY ./kernel/firmware/qcom/qcs6490 /lib/firmware/qcom/qcs6490
 COPY ./kernel/firmware/qca /lib/firmware/qca
 RUN ln -sf /lib/firmware/ath10k/WCN3990/hw1.0/wlanmdsp.mbn /lib/firmware/qcom/sdm845/wlanmdsp.mbn
+
+# AIC8800 USB WiFi/BT firmware (Dragon's AICsemi chip)
+COPY ./kernel/firmware/aic8800_fw/USB /lib/firmware/aic8800_fw/USB
+
+# AIC8800 kernel modules (out-of-tree, pre-built for vamOS kernel)
+ARG KVER
+COPY ./kernel/modules/*.ko /tmp/vamos/modules/
+RUN if [ -n "${KVER}" ]; then \
+      mkdir -p /lib/modules/${KVER}/extra && \
+      cp /tmp/vamos/modules/*.ko /lib/modules/${KVER}/extra/ && \
+      touch /lib/modules/${KVER}/modules.order /lib/modules/${KVER}/modules.builtin /lib/modules/${KVER}/modules.builtin.modinfo && \
+      depmod -a ${KVER} 2>/dev/null || true; \
+    fi && \
+    rm -rf /tmp/vamos/modules
 
 # Root filesystem overlay — all userspace files at their final paths
 COPY ./userspace/root/ /
@@ -74,18 +89,20 @@ RUN chown -R comma:comma /home/comma
 RUN printf '\nif [ -f ~/.bash_aliases ]; then\n    . ~/.bash_aliases\nfi\n' >> /home/$USERNAME/.bashrc
 RUN mkdir -p /root/.config
 
-# Enable runit services
+# Enable runit services (Dragon vamOS baseline)
+# Minimal: boot + ssh + serial + basic logging. Comma-era services
+# (power_drop_monitor, init-qcom, brightnessd, gpio, lte, modemmanager,
+# adsp/cdsp, rmtfs, magic, sound, screen_calibration, ipa_fws, varwatch,
+# fs_setup, comma, leprop, irsc_util, qrtr-ns/tqftpserv/pd-mapper,
+# cnss_daemon, ssh-param-watcher, ncm-param-watcher, avahi-ssh-publish,
+# serial-hostname, bluetoothd, dnsmasq, polkitd) are NOT enabled — they
+# assume comma hardware and spam the console with errors on Dragon.
+# Re-enable as Dragon support for those subsystems lands.
 RUN for svc in \
-  ipa_fws brightnessd fs_setup gpio init-qcom lte \
-  avahi-ssh-publish power_monitor power_drop_monitor \
-  screen_calibration serial-hostname \
-  sound varwatch busybox-ntpd \
-  irsc_util leprop adsp cdsp \
-  qrtr-ns rmtfs tqftpserv pd-mapper \
-  comma modemmanager bluetoothd magic \
-  ssh-param-watcher ncm-param-watcher dnsmasq \
-  rsyslogd iptables cnss_daemon polkitd \
-  sshd agetty-ttyMSM0 agetty-ttyAMA0; do \
+  sshd rsyslogd busybox-ntpd iptables \
+  bluetoothd \
+  comma \
+  agetty-ttyMSM0 agetty-ttyAMA0; do \
     ln -sf /etc/sv/$svc /etc/runit/runsvdir/default/; \
   done
 
