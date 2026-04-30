@@ -7,10 +7,10 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." >/dev/null && pwd)"
 cd "$DIR"
 
-STORAGE="emmc"
+STORAGE="nvme"
 for arg in "$@"; do
   case "$arg" in
-    --nvme) STORAGE="nvme" ;;
+    --emmc) STORAGE="emmc" ;;
   esac
 done
 
@@ -34,12 +34,12 @@ if ! lsusb -d 05c6:9008 >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ "$STORAGE" = "nvme" ]; then
-  MEMORY_ARG="--memory=nvme"
-  echo "== Flashing $DISK_IMG to Dragon NVMe =="
-else
+if [ "$STORAGE" = "emmc" ]; then
   MEMORY_ARG="--memory=Sdcc --slot=0"
   echo "== Flashing $DISK_IMG to Dragon eMMC =="
+else
+  MEMORY_ARG="--memory=nvme"
+  echo "== Flashing $DISK_IMG to Dragon NVMe =="
 fi
 sudo edl-ng $MEMORY_ARG write-sector 0 "$DISK_IMG" --loader="$LOADER"
 
