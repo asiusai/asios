@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Karel Nagel <nagelkarel@gmail.com>
+Date: Wed, 30 Apr 2026 14:45:00 +0000
+Subject: arm64: dts: qcom: qcs6490-radxa-dragon-q6a: add venus encoder SID
+
+The upstream Venus DT node only maps SID 0x2180 (controller/MVSC).
+The vcodec core (MVS0) DMA uses SID 0x2184, which causes SMMU
+translation faults and crashes during video encoding. Add the
+missing stream ID so both controller and core DMA are mapped.
+
+Signed-off-by: Karel Nagel <nagelkarel@gmail.com>
+---
+ arch/arm64/boot/dts/qcom/qcs6490-radxa-dragon-q6a.dts | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/qcs6490-radxa-dragon-q6a.dts b/arch/arm64/boot/dts/qcom/qcs6490-radxa-dragon-q6a.dts
+index 111111111111..222222222222 100644
+--- a/arch/arm64/boot/dts/qcom/qcs6490-radxa-dragon-q6a.dts
++++ b/arch/arm64/boot/dts/qcom/qcs6490-radxa-dragon-q6a.dts
+@@ -1335,6 +1335,8 @@
+
+ &venus {
+ 	status = "okay";
++	iommus = <&apps_smmu 0x2180 0x20>,
++		 <&apps_smmu 0x2184 0x20>;
+ };
+
+ /* PINCTRL - additions to nodes defined in sc7280.dtsi */

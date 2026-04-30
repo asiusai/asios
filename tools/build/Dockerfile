@@ -66,6 +66,11 @@ COPY ./kernel/firmware/qcom/qcs6490 /lib/firmware/qcom/qcs6490
 COPY ./kernel/firmware/qca /lib/firmware/qca
 RUN ln -sf /lib/firmware/ath10k/WCN3990/hw1.0/wlanmdsp.mbn /lib/firmware/qcom/sdm845/wlanmdsp.mbn
 
+# Venus video encoder firmware (QCS6490 VPU 2.0)
+COPY ./kernel/firmware/qcom/vpu /lib/firmware/qcom/vpu
+RUN mkdir -p /lib/firmware/qcom/vpu-2.0 && \
+    ln -sf ../vpu/vpu20_p1.mbn /lib/firmware/qcom/vpu-2.0/venus.mbn
+
 # AIC8800 USB WiFi/BT firmware (Dragon's AICsemi chip)
 COPY ./kernel/firmware/aic8800_fw/USB /lib/firmware/aic8800_fw/USB
 RUN ln -sf aic8800_fw/USB/aic8800D80 /lib/firmware/aic8800D80
