@@ -8,6 +8,7 @@
 #include <linux/of_platform.h>
 #include <linux/slab.h>
 
+
 #define PHANDLE_CAM2_EP		0xf101
 #define PHANDLE_CAMSS_PORT2_EP	0xf102
 #define PHANDLE_CAM3_EP		0xf103
@@ -65,6 +66,26 @@ static int add_prop_u32(struct device_node *np, const char *name, u32 val)
 	prop->value = p;
 	prop->length = sizeof(*p);
 	return of_changeset_add_property(&ocs, np, prop);
+}
+
+static int set_prop_u32_array(struct device_node *np, const char *name,
+			      const u32 *vals, int count)
+{
+	struct property *prop;
+	__be32 *p;
+	int i;
+
+	prop = kzalloc(sizeof(*prop), GFP_KERNEL);
+	if (!prop)
+		return -ENOMEM;
+	prop->name = kstrdup(name, GFP_KERNEL);
+	p = kcalloc(count, sizeof(*p), GFP_KERNEL);
+	if (!p) { kfree(prop); return -ENOMEM; }
+	for (i = 0; i < count; i++)
+		p[i] = cpu_to_be32(vals[i]);
+	prop->value = p;
+	prop->length = count * sizeof(*p);
+	return of_changeset_update_property(&ocs, np, prop);
 }
 
 static int add_prop_u32_array(struct device_node *np, const char *name,
@@ -319,6 +340,7 @@ static int __init camera_overlay_init(void)
 	of_platform_populate(cci2, NULL, NULL, NULL);
 
 	pr_info("dragon-camera: 2x IMX219 enabled (CAM2+CAM3)\n");
+
 	of_node_put(camss);
 	of_node_put(cci1);
 	of_node_put(cci2);
