@@ -12,19 +12,21 @@ CONTINUE="/data/continue.sh"
 INSTALLER="/tmp/installer"
 RESET_TRIGGER="/data/__system_reset__"
 
-echo "waiting for magic"
-for i in {1..200}; do
-  # Check for drmfd socket (magic service creates this when ready)
-  if [ -S /tmp/drmfd.sock ]; then
-    break
-  fi
-  sleep 0.1
-done
+if [ ! -f /ASIUS ]; then
+  echo "waiting for magic"
+  for i in {1..200}; do
+    # Check for drmfd socket (magic service creates this when ready)
+    if [ -S /tmp/drmfd.sock ]; then
+      break
+    fi
+    sleep 0.1
+  done
 
-if [ -S /tmp/drmfd.sock ]; then
-  echo "magic ready after ${SECONDS}s"
-else
-  echo "timed out waiting for magic, ${SECONDS}s"
+  if [ -S /tmp/drmfd.sock ]; then
+    echo "magic ready after ${SECONDS}s"
+  else
+    echo "timed out waiting for magic, ${SECONDS}s"
+  fi
 fi
 
 sudo chown comma: /data
@@ -54,17 +56,18 @@ handle_setup_keys () {
   fi
 }
 
-# factory reset handling
+# factory reset handling (ASIUS: /data lives on the rootfs, not a separate
+# mountpoint, so skip the mountpoint check that would falsely trigger recovery)
 if [ ! -f /tmp/booted ]; then
   touch /tmp/booted
   if [ -f "$RESET_TRIGGER" ]; then
     echo "launching system reset, reset trigger present"
     rm -f $RESET_TRIGGER
     $RESET
-  elif (( "$(cat /sys/class/input/input*/device/touch_count 2>/dev/null | head -1)" > 4 )); then
+  elif [ "$(cat /sys/class/input/input*/device/touch_count 2>/dev/null | head -1)" -gt 4 ] 2>/dev/null; then
     echo "launching system reset, got taps"
     $RESET --tap-reset
-  elif ! mountpoint -q /data; then
+  elif [ ! -f /ASIUS ] && ! mountpoint -q /data; then
     echo "userdata not mounted. loading system reset"
     $RESET --recover
   fi

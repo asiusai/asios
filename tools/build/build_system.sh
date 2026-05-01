@@ -19,7 +19,7 @@ OUT_IMAGE="$OUTPUT_DIR/system.img"
 
 # the partition is 10G, but openpilot's updater didn't always handle the full size
 # Increased from 4500M to 6G for Python packages
-ROOTFS_IMAGE_SIZE=6G
+ROOTFS_IMAGE_SIZE=10G
 
 # Create temp dir if non-existent
 mkdir -p "$BUILD_DIR" "$OUTPUT_DIR" "$DOWNLOADS_DIR"
@@ -96,11 +96,18 @@ trap "exec_as_root umount -l $ROOTFS_DIR &> /dev/null || true; \
 echo \"Cleaning up containers:\"; \
 docker container rm -f $MOUNT_CONTAINER_ID" EXIT
 
+KVER=""
+if [ -f "$DIR/build/kernel-out/include/config/kernel.release" ]; then
+  KVER=$(cat "$DIR/build/kernel-out/include/config/kernel.release")
+  echo "Kernel version from build: $KVER"
+fi
+
 echo "Building and extracting vamos docker image"
 docker buildx build -f tools/build/Dockerfile --platform=linux/arm64 \
   --output "type=tar,dest=-" \
   --provenance=false \
   --build-arg VOID_ROOTFS="${VOID_ROOTFS_FILE#"$DIR/"}" \
+  --build-arg KVER="${KVER}" \
   "$DIR" | docker exec -i "$MOUNT_CONTAINER_ID" tar -xf - -C "$ROOTFS_DIR"
 echo "Build and extraction complete"
 
@@ -132,6 +139,87 @@ exec_as_root sh -c "
   printf '%s\n%s\n' '$GIT_HASH' '$DATETIME' > BUILD
 "
 
+# Install kernel modules (in-tree + out-of-tree prebuilt)
+if [ -n "$KVER" ]; then
+  echo "Installing kernel modules for $KVER"
+  KMOD_SRC="$DIR/build/modules_install/lib/modules/$KVER"
+  exec_as_root mkdir -p "$ROOTFS_DIR/lib/modules"
+  if [ -d "$KMOD_SRC" ]; then
+    exec_as_root cp -a "$KMOD_SRC" "$ROOTFS_DIR/lib/modules/$KVER"
+  else
+    exec_as_root mkdir -p "$ROOTFS_DIR/lib/modules/$KVER"
+    exec_as_root sh -c "touch '$ROOTFS_DIR/lib/modules/$KVER/modules.order' '$ROOTFS_DIR/lib/modules/$KVER/modules.builtin' '$ROOTFS_DIR/lib/modules/$KVER/modules.builtin.modinfo'"
+  fi
+  exec_as_root mkdir -p "$ROOTFS_DIR/lib/modules/$KVER/extra"
+  for ko in aic_load_fw.ko aic8800_fdrv.ko aic_btusb.ko camera_overlay.ko; do
+    if [ -f "$DIR/kernel/modules/$ko" ]; then
+      exec_as_root cp "$DIR/kernel/modules/$ko" "$ROOTFS_DIR/lib/modules/$KVER/extra/"
+    fi
+  done
+  exec_as_root depmod -b "$ROOTFS_DIR" -a "$KVER" 2>/dev/null || true
+fi
+
+# Bake openpilot into /data/openpilot so first boot works offline.
+# Path resolution: vamos may be a submodule; the outer asius repo contains
+# openpilot/ alongside vamos/. Fall back to not baking if not found.
+OP_SRC=""
+for cand in "$DIR/../openpilot" "$(git -C "$DIR" rev-parse --show-superproject-working-tree 2>/dev/null)/openpilot"; do
+  [ -d "$cand" ] && OP_SRC="$(cd "$cand" && pwd)" && break
+done
+if [ -n "$OP_SRC" ]; then
+  echo "Baking openpilot from $OP_SRC into /data/openpilot"
+
+  # Generate build.json from git metadata before we strip .git
+  OP_COMMIT=$(git -C "$OP_SRC" rev-parse HEAD 2>/dev/null || echo "unknown")
+  OP_BRANCH=$(git -C "$OP_SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+  OP_ORIGIN=$(git -C "$OP_SRC" remote get-url origin 2>/dev/null || echo "unknown")
+  OP_DATE=$(git -C "$OP_SRC" log -1 --format=%ci 2>/dev/null || echo "unknown")
+  OP_VERSION=$(cat "$OP_SRC/common/version.h" 2>/dev/null | grep COMMA_VERSION | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "0.0.0")
+
+  # All fs ops run inside the builder container — ROOTFS_DIR only exists there
+  exec_as_root mkdir -p "$ROOTFS_DIR/data/openpilot"
+  exec_as_root cp -a "$OP_SRC/." "$ROOTFS_DIR/data/openpilot/"
+  exec_as_root sh -c "
+    cat > '$ROOTFS_DIR/data/openpilot/build.json' <<BUILDJSON
+{
+  \"channel\": \"$OP_BRANCH\",
+  \"openpilot\": {
+    \"version\": \"$OP_VERSION\",
+    \"release_notes\": \"\",
+    \"git_commit\": \"$OP_COMMIT\",
+    \"git_origin\": \"$OP_ORIGIN\",
+    \"git_commit_date\": \"$OP_DATE\",
+    \"build_style\": \"baked\"
+  }
+}
+BUILDJSON
+    cd '$ROOTFS_DIR/data/openpilot' && \
+    rm -rf .git .gitattributes build scons_cache && \
+    find . -name .git -type d -prune -exec rm -rf {} + ; \
+    find . -name __pycache__ -type d -prune -exec rm -rf {} + ; \
+    find . -name '*.o' -delete
+    cat > '$ROOTFS_DIR/data/continue.sh' <<'CONT'
+#!/usr/bin/env bash
+cd /data/openpilot
+exec /data/openpilot/launch_openpilot.sh
+CONT
+    chmod +x '$ROOTFS_DIR/data/continue.sh'
+    chown -R 1000:1000 '$ROOTFS_DIR/data/openpilot' '$ROOTFS_DIR/data/continue.sh'
+  "
+
+  # Compile ASIUS native libraries (fast_parse.so, cl_dispatch.so)
+  echo "Compiling ASIUS native libraries"
+  exec_as_root chroot "$ROOTFS_DIR" sh -c '
+    cd /data/openpilot
+    gcc -shared -fPIC -O2 -o fast_parse.so fast_parse.c -lm 2>/dev/null && echo "  built fast_parse.so" || echo "  WARN: fast_parse.c not found"
+    cd /data/openpilot/tinygrad_repo
+    gcc -shared -fPIC -O2 -o cl_dispatch.so cl_dispatch.c -lOpenCL 2>/dev/null && echo "  built cl_dispatch.so" || echo "  WARN: cl_dispatch.c not found"
+    chown 1000:1000 /data/openpilot/fast_parse.so /data/openpilot/tinygrad_repo/cl_dispatch.so 2>/dev/null
+  '
+else
+  echo "WARN: openpilot not found next to vamos; /data/openpilot will be empty on first boot"
+fi
+
 # Profile rootfs (before unmount)
 echo "Profiling rootfs"
 MOUNT_CONTAINER_ID="$MOUNT_CONTAINER_ID" ROOTFS_DIR="$ROOTFS_DIR" \
@@ -147,15 +235,17 @@ exec_as_root mkfs.erofs \
   -C65536 \
   -T0 \
   --all-root \
+  -x-1 \
   "$EROFS_IMAGE" "$ROOTFS_DIR"
 
 # Unmount image
 echo "Unmount filesystem"
 exec_as_root umount -l "$ROOTFS_DIR"
 
-# Sparsify system image
-echo "Sparsifying system image"
-exec_as_user img2simg "$ROOTFS_IMAGE" "$OUT_IMAGE"
+# Copy raw ext4 image to output. edl-ng write-sector takes raw bytes, not the
+# Android-sparse format qdl used to consume — so no img2simg step.
+echo "Copying system image to output"
+exec_as_user cp "$ROOTFS_IMAGE" "$OUT_IMAGE"
 
 # Copy EROFS image to output
 cp "$EROFS_IMAGE" "$OUT_EROFS_IMAGE"
