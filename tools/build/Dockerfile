@@ -36,6 +36,7 @@ RUN cd /tmp/vamos/irsc_util && \
 RUN xbps-install -y \
   bash-completion \
   btop \
+  efibootmgr \
   hyperfine \
   iperf \
   iperf3 \
@@ -44,6 +45,7 @@ RUN xbps-install -y \
   nfs-utils \
   socat \
   stress-ng \
+  tailscale \
   tree \
   wavemon \
   android-tools \
@@ -59,11 +61,15 @@ RUN cd /tmp/vamos/uv && \
     MAKEFLAGS="-j$(nproc)" UV_CONCURRENT_BUILDS=4 UV_NO_CACHE=1 UV_PROJECT_ENVIRONMENT=$XDG_DATA_HOME/venv \
     uv sync --frozen --inexact
 
-# Install firmware from upstream linux-firmware (ath10k WiFi + modem + Bluetooth)
-COPY ./kernel/firmware/ath10k/WCN3990/hw1.0 /lib/firmware/ath10k/WCN3990/hw1.0
-COPY ./kernel/firmware/qcom/sdm845 /lib/firmware/qcom/sdm845
-COPY ./kernel/firmware/qca /lib/firmware/qca
-RUN ln -sf /lib/firmware/ath10k/WCN3990/hw1.0/wlanmdsp.mbn /lib/firmware/qcom/sdm845/wlanmdsp.mbn
+# Install AIC8800 USB WiFi/BT firmware.
+COPY ./kernel/firmware/aic8800_fw/USB /lib/firmware/aic8800_fw/USB
+RUN ln -sf aic8800_fw/USB/aic8800D80 /lib/firmware/aic8800D80
+
+# Qualcomm GENI firmware for I2C/SPI/UART serial engines.
+COPY ./kernel/firmware/qcom/qcm6490/qupv3fw.elf /lib/firmware/qcom/qcm6490/qupv3fw.elf
+
+# Kernel modules are installed after Docker export in build_system.sh
+# (in-tree from build/modules_install + out-of-tree prebuilt from kernel/modules/)
 
 # Root filesystem overlay — all userspace files at their final paths
 COPY ./userspace/root/ /
@@ -74,18 +80,21 @@ RUN chown -R comma:comma /home/comma
 RUN printf '\nif [ -f ~/.bash_aliases ]; then\n    . ~/.bash_aliases\nfi\n' >> /home/$USERNAME/.bashrc
 RUN mkdir -p /root/.config
 
-# Enable runit services
+# Enable runit services (Dragon vamOS baseline)
+# Minimal: boot + ssh + serial + basic logging. Comma-era services
+# (gpio, lte, modemmanager,
+# adsp/cdsp, rmtfs, sound, ipa_fws, varwatch,
+# fs_setup, comma, leprop, irsc_util, qrtr-ns/tqftpserv/pd-mapper,
+# cnss_daemon, ssh-param-watcher, ncm-param-watcher, avahi-ssh-publish,
+# serial-hostname, bluetoothd, dnsmasq, polkitd) are NOT enabled — they
+# assume comma hardware and spam the console with errors on Dragon.
+# Re-enable as Dragon support for those subsystems lands.
 RUN for svc in \
-  ipa_fws brightnessd fs_setup gpio init-qcom lte \
-  avahi-ssh-publish power_monitor power_drop_monitor \
-  screen_calibration serial-hostname \
-  sound varwatch busybox-ntpd \
-  irsc_util leprop adsp cdsp \
-  qrtr-ns rmtfs tqftpserv pd-mapper \
-  comma modemmanager bluetoothd magic \
-  ssh-param-watcher ncm-param-watcher dnsmasq \
-  rsyslogd iptables cnss_daemon polkitd \
-  sshd agetty-ttyMSM0 agetty-ttyAMA0; do \
+  sshd rsyslogd busybox-ntpd iptables \
+  tailscaled \
+  bluetoothd \
+  comma init-qcom \
+  agetty-ttyMSM0 agetty-ttyAMA0; do \
     ln -sf /etc/sv/$svc /etc/runit/runsvdir/default/; \
   done
 
@@ -96,7 +105,7 @@ RUN rm -f /etc/runit/runsvdir/default/udevd
 RUN sed -i 's/FileCreateMode 0640/FileCreateMode 0644/' /etc/rsyslog.conf
 
 # Set executable permissions
-RUN chmod +x /usr/comma/comma.sh /usr/comma/get-serial.sh /usr/comma/get-bt-address.sh /usr/comma/set-bt-address.sh /usr/comma/set_ssh.sh /usr/comma/set_ncm.sh /usr/comma/fs_setup.sh /usr/bin/journalctl /etc/sv/bluetoothd/run
+RUN chmod +x /usr/comma/comma.sh /usr/comma/get-serial.sh /usr/comma/get-bt-address.sh /usr/comma/set-bt-address.sh /usr/comma/set_ssh.sh /usr/comma/set_ncm.sh /usr/comma/fs_setup.sh /usr/bin/journalctl /etc/sv/bluetoothd/run /etc/sv/tailscaled/run
 RUN chmod +x /etc/runit/1 /etc/runit/2 /etc/runit/3
 
 # Shutdown wrappers - send wall broadcast like systemd does on Ubuntu
@@ -135,8 +144,6 @@ RUN echo "precedence ::ffff:0:0/96 100" >> /etc/gai.conf
 # Compatibility symlinks
 # pdmappersvc needs libjson-c.so.2 but Void has libjson-c.so.5
 RUN ln -sf /usr/lib/libjson-c.so.5 /usr/lib/libjson-c.so.2
-# raylib wheel needs libffi.so.6 but Void has newer version
-RUN ln -sf $(ls /usr/lib/libffi.so.* 2>/dev/null | grep -v '.so.6' | head -1) /usr/lib/libffi.so.6
 # TODO: remove once no more openpilot libraries build against the _adreno names
 RUN ln -sf /usr/lib/libGLESv2.so.2 /usr/lib/libGLESv2_adreno.so && \
     ln -sf /usr/lib/libEGL.so.1 /usr/lib/libEGL_adreno.so
@@ -183,10 +190,9 @@ RUN echo '#!/bin/sh' > /etc/sv/sshd/run && \
     echo 'exec 2>&1' >> /etc/sv/sshd/run && \
     echo '# Create ssh host keys if needed (on first boot)' >> /etc/sv/sshd/run && \
     echo 'mkdir -p /data/etc/ssh' >> /etc/sv/sshd/run && \
-    echo 'if [ ! -f /data/etc/ssh/ssh_host_ed25519_key ]; then' >> /etc/sv/sshd/run && \
-    echo '  ssh-keygen -t ed25519 -f /data/etc/ssh/ssh_host_ed25519_key -N ""' >> /etc/sv/sshd/run && \
-    echo '  ssh-keygen -t rsa -b 4096 -f /data/etc/ssh/ssh_host_rsa_key -N ""' >> /etc/sv/sshd/run && \
-    echo '  ssh-keygen -t ecdsa -f /data/etc/ssh/ssh_host_ecdsa_key -N ""' >> /etc/sv/sshd/run && \
+    echo 'if [ ! -s /data/etc/ssh/ssh_host_ed25519_key ] || [ ! -s /data/etc/ssh/ssh_host_rsa_key ] || [ ! -s /data/etc/ssh/ssh_host_ecdsa_key ]; then' >> /etc/sv/sshd/run && \
+    echo '  rm -f /data/etc/ssh/ssh_host_*' >> /etc/sv/sshd/run && \
+    echo '  ssh-keygen -A -f /data' >> /etc/sv/sshd/run && \
     echo 'fi' >> /etc/sv/sshd/run && \
     echo 'exec /usr/bin/sshd -D' >> /etc/sv/sshd/run
 
